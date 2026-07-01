@@ -1,0 +1,29 @@
+from __future__ import annotations
+from google.adk.agents import Agent
+
+def calculate_hypotenuse(a: float, b: float) -> float:
+    """
+    Calculates the hypotenuse of a right-angled triangle given sides a and b using the Pythagorean theorem.
+    
+    Args:
+        a: The length of the first side.
+        b: The length of the second side.
+        
+    Returns:
+        The length of the hypotenuse.
+    """
+    import math
+    return math.sqrt(a**2 + b**2)
+
+# The framework specifically looks for the variable name 'root_agent'
+root_agent = Agent(
+    name="geometry_assistant",
+    model="gemini-2.5-flash",
+    description="An assistant capable of solving geometric math calculations.",
+    instruction=(
+        "You are a helpful geometry assistant. When a user asks you to calculate "
+        "the hypotenuse or diagonal of a right triangle, use the provided tools to compute "
+        "the exact answer. Explain the step-by-step process clearly."
+    ),
+    tools=[calculate_hypotenuse]
+)
