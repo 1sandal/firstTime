@@ -1,15 +1,18 @@
 import json
 import re
+import os
 import requests
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from google.adk.agents import Agent 
+from google.adk.agents import Agent
+from google import genai
+from google.genai import types
+from . import parse
+from . import search
 
-
-## ABCCCC 
-
-print("helloworld")
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
 
 # =====================================================================
 # 1. DEFINE TARGET STRUCTURED OUTPUT SCHEMA
@@ -25,98 +28,89 @@ class PatentInsightSchema(BaseModel):
 
 
 # =====================================================================
+# 2. THE RETRIEVAL TOOL
 # =====================================================================
-# 2. THE RETRIEVAL TOOL (Using OpenAlex Public API - Reliable & Free)
+def get_raw_patent_data_by_topic(urls: List[str]) -> str:
+    # Import your parse module
+
+    """
+    Retrieves patent details for a given topic. 
+    # Currently uses a hardcoded list of URLs as a proof of concept.
+    """
+    # print("HELLLOOO")
+    # 1. Fetch the structured list of dictionaries from parse.py
+    patents_list = parse.parse_all_patents(urls)
+    
+    # print("HELLLOOO")
+
+    # 2. Return it as a JSON string so your Agent framework can read it as context
+    return json.dumps(patents_list, indent=2)
+
 # =====================================================================
-def get_raw_patent_data_by_topic(topic: str) -> str:
+# 3. THE SEARCH TOOL
+# =====================================================================
+def search_patents(topic: str) -> str:
+    # Import your search module
+
     """
-    Searches the open-access OpenAlex database for patents matching a specific topic.
-    Returns structured metadata and abstracts for the agent to synthesize.
-    No API key required.
-    
-    Args:
-        topic: The string keyword or phrase to search for.
-        
-    Returns:
-        A rich string text dump ready for an LLM to parse into JSON.
+    Retrieves patent details for a given topic. 
+    Currently uses a hardcoded list of URLs as a proof of concept.
     """
-    import requests
-
-    # fallback clean encoding
-    clean_topic = topic.strip().replace(" ", "+")
+    # print("HELLLOOO")
+    # 1. Fetch the structured list of dictionaries from parse.py
+    search_results = search.search_patents(topic)
     
-    # We query using the structural endpoint with an updated, friendly User-Agent header
-    url = f"https://api.openalex.org/works?filter=type:patent&search={clean_topic}&per_page=3"
+
+    # 2. Return it as a JSON string so your Agent framework can read it as context
+    return json.dumps(search_results, indent=2)
+
+
+# =====================================================================
+# 4 c. Joke TOOL
+# =====================================================================
+def provide_joke(topic: str) -> str:
+    # Import your parse module
+
+    """
+    Retrieves a joke
+    """
+    joke = ["Why don't skeletons fight each other? They don't have the guts."]
+    # 1. Fetch the structured list of dictionaries from parse.py    
+
+    # 2. Return it as a JSON string so your Agent framework can read it as context
+    return joke
+
+# =====================================================================
+# 4 c. Summarize and find whitespace
+# =====================================================================
+def analyze_all_patents(patents_json):
+    client = genai.Client(vertexai=True, project=os.environ["GOOGLE_CLOUD_PROJECT"], location="us-central1")
+
+    print(f"--- Finding whitespace ---")
     
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code != 200:
-            return f"Error connecting to data provider. Status code: {response.status_code}"
-        
-        data = response.json()
-        results = data.get("results", [])
-    except Exception as e:
-        return f"Failed to retrieve results due to exception: {str(e)}"
+    # Load the hand-drawn sketch
+    patent_data = patents_json
 
-    if not results:
-        # Fallback: drop the hard type:patent filter string if it returns empty, 
-        # and search globally for the term with 'patent' appended to the keyword text
-        fallback_url = f"https://api.openalex.org/works?search={clean_topic}+patent&per_page=3"
-        try:
-            response = requests.get(fallback_url, headers=headers, timeout=10)
-            data = response.json()
-            results = data.get("results", [])
-        except Exception:
-            return "No matching patents found for the given topic query."
+    # Prompt Gemini to read the sketch and output clean JSON
+    detection_prompt = """You are a patent intelligence analyst specializing in biotech AI. Analyze the provided patent json and identify white spaces — specific areas of innovation that are NOT yet claimed. Be concrete and specific. Ground every insight in the actual patents provided.
+    """
 
-    if not results:
-        return "No matching patents found for the given topic query."
+    # Model: Gemini 2.5 Flash (Optimized for JSON extraction)
+    detection_response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[detection_prompt, json.dumps(patents_json)],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.1
+        )
+    )
 
-    combined_payload = []
+    # Parse the JSON data
+    #design_data = json.loads(detection_response.text)
+    #print("Detected Data:", json.dumps(design_data, indent=2))
+    #return design_data
+    return detection_response.text
 
-    for item in results:
-        raw_id = item.get("ids", {}).get("patent", "")
-        if not raw_id:
-            raw_id = item.get("id", "").split("/")[-1]
-            
-        title = item.get("title", "Unknown Title")
-        pub_date = item.get("publication_date", "Unknown Date")
-        
-        classifications = []
-        if item.get("primary_topic"):
-            classifications.append(item["primary_topic"].get("display_name", ""))
-        for concept in item.get("concepts", [])[:3]:
-            classifications.append(concept.get("display_name", ""))
-
-        abstract_text = "N/A"
-        abstract_inverted_index = item.get("abstract_inverted_index")
-        if abstract_inverted_index:
-            try:
-                words = {}
-                for word, positions in abstract_inverted_index.items():
-                    for pos in positions:
-                        words[pos] = word
-                abstract_text = " ".join([words[p] for p in sorted(words.keys())])
-            except Exception:
-                abstract_text = "Structure incomplete"
-
-        patent_dump = f"""
-        --- START PATENT RECORD ---
-        PATENT ID: {raw_id}
-        TITLE: {title}
-        PUBLICATION DATE: {pub_date}
-        CONCEPT CLASSIFICATIONS: {", ".join(classifications)}
-        ABSTRACT/SUMMARY TEXT: 
-        {abstract_text}
-        --- END PATENT RECORD ---
-        """
-        combined_payload.append(patent_dump)
-
-    return "\n\n".join(combined_payload)
 
 # =====================================================================
 # 3. AGENT DEFINITION
@@ -131,12 +125,13 @@ root_agent = Agent(
     model="gemini-2.5-flash",
     description="An assistant capable of finding related patents",
     instruction=(
-        "You are a helpful geometry assistant. When a user asks you about a patent"
-        "use the tools to find related patents."
-        "Output in format like PatentInsightSchema structure. Not conversational."
+        "You are a helpful assistant. When a user asks you about a patent"
+        "run the tools given. If they need a joke, provide a joke from tool instead of patents." \
+        "Once you have all patents, also provide a summary of whitespace domain."
     ),
-    tools=[get_raw_patent_data_by_topic],
-    response_schema=List[PatentInsightSchema]
+    tools=[search_patents, get_raw_patent_data_by_topic, provide_joke, analyze_all_patents],
+    # tools=[get_raw_patent_data_by_topic, provide_joke, analyze_all_patents],
+    # response_schema=List[PatentInsightSchema]
 )
 
 # Assign system properties directly or use standard framework string parameters 
